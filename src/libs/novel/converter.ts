@@ -2,13 +2,13 @@
 
 import { nanoid } from "nanoid";
 import { NovelPatternMatcher } from "./patternMatcher";
-import type { RawBlock } from "./types";
 import { TextProcessor } from "./textProcessor";
 import type {
   Chapter,
   LanguageCode,
   Novel,
   Block as NovelBlock,
+  RawBlock,
   TocItem,
 } from "./types";
 

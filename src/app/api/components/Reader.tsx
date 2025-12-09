@@ -1,12 +1,12 @@
-// components/Reader.tsx
+/** biome-ignore-all lint/suspicious/noArrayIndexKey: <temporary> */
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import type { Novel } from "@/libs/novel/types";
 import { useReaderStore } from "@/store/useReaderStore";
-import { cn } from "@/lib/utils";
 
 interface ReaderProps {
   novel: Novel;
@@ -17,19 +17,18 @@ export function Reader({ novel, novelId }: ReaderProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const { bookmark, saveBookmark, setNovel } = useReaderStore();
 
-  // Chapitre actuellement "focus" dans la zone de lecture
   const [activeChapterId, setActiveChapterId] = useState<string | null>(
     novel.chapters[0]?.id ?? null,
   );
+  const [isTocOpen, setIsTocOpen] = useState(false);
 
-  // Enregistrer le roman dans le store + charger le bookmark éventuel
+  // Init
   useEffect(() => {
     setNovel(novel, novelId);
-    // au changement de novel, on reset le chapitre actif
     setActiveChapterId(novel.chapters[0]?.id ?? null);
   }, [novel, novelId, setNovel]);
 
-  // Scroll vers le bookmark éventuel
+  // Scroll to bookmark
   useEffect(() => {
     if (!bookmark || !containerRef.current) return;
 
@@ -42,11 +41,10 @@ export function Reader({ novel, novelId }: ReaderProps) {
     }
   }, [bookmark]);
 
-  // Détection du chapitre "focus" en fonction du scroll dans le ScrollArea
+  // Update active chapter during scroll
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Le viewport réel est l'élément Radix avec data-slot="scroll-area-viewport"
     const viewport = containerRef.current.closest<HTMLElement>(
       '[data-slot="scroll-area-viewport"]',
     );
@@ -58,10 +56,9 @@ export function Reader({ novel, novelId }: ReaderProps) {
       const sections = Array.from(
         containerRef.current.querySelectorAll<HTMLElement>("[data-chapter-id]"),
       );
-      if (!sections.length) return;
 
       const viewportRect = viewport.getBoundingClientRect();
-      const targetY = viewportRect.top + viewportRect.height * 0.3; // 30% de la hauteur
+      const targetY = viewportRect.top + viewportRect.height * 0.3;
 
       let closestId: string | null = null;
       let closestDist = Infinity;
@@ -80,13 +77,12 @@ export function Reader({ novel, novelId }: ReaderProps) {
       }
     };
 
-    // premier calcul au montage
     handleScroll();
-
     viewport.addEventListener("scroll", handleScroll);
     return () => viewport.removeEventListener("scroll", handleScroll);
   }, [activeChapterId]);
 
+  // Bookmark
   const handleSaveBookmark = () => {
     if (!containerRef.current) return;
 
@@ -101,120 +97,179 @@ export function Reader({ novel, novelId }: ReaderProps) {
 
     if (!firstVisible) return;
 
-    const chapterId = firstVisible.dataset.chapterId;
-    const blockId = firstVisible.dataset.blockId;
+    if (
+      firstVisible.dataset.chapterId === undefined ||
+      firstVisible.dataset.blockId === undefined
+    )
+      return;
 
-    if (chapterId && blockId) {
-      saveBookmark({ chapterId, blockId });
-      setActiveChapterId(chapterId);
-    }
+    saveBookmark({
+      chapterId: firstVisible.dataset.chapterId,
+      blockId: firstVisible.dataset.blockId,
+    });
   };
 
+  const handleClickTocItem = (id: string) => {
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+    setActiveChapterId(id);
+    setIsTocOpen(false);
+  };
+
+  // ---------------- UI ----------------
   return (
-    <div className="flex h-[80vh] min-h-0 border rounded-md overflow-hidden bg-background text-foreground">
-      {/* TOC */}
-      <aside className="hidden md:block w-64 border-r p-4">
-        <h2 className="font-semibold mb-2">Sommaire</h2>
-        <ScrollArea className="h-[calc(80vh-3rem)] pr-2">
-          <ul className="space-y-1 text-sm">
-            {novel.toc.map((item, index) => {
-              const isActive = item.id === activeChapterId;
-              return (
-                <li key={`${item.id}-${index}`}>
+    <>
+      {/* Bouton mobile menu */}
+      <Button
+        type="button"
+        size="icon"
+        variant="outline"
+        className="fixed bottom-4 left-4 z-40 md:hidden shadow-md bg-[#2c2c2c] border-[#555] text-[#ccc]"
+        onClick={() => setIsTocOpen(!isTocOpen)}
+      >
+        ☰
+      </Button>
+
+      {/* Menu mobile (slide depuis la droite) */}
+      {isTocOpen && (
+        <div className="fixed inset-0 z-30 md:hidden bg-black/40">
+          <div className="absolute inset-y-0 right-0 w-[80vw] max-w-xs bg-[#252525] border-l border-[#444] shadow-xl flex flex-col text-[#ccc]">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#444]">
+              <h2 className="font-semibold">Sommaire</h2>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                className="text-[#ccc]"
+                onClick={() => setIsTocOpen(false)}
+              >
+                ✕
+              </Button>
+            </div>
+
+            <ScrollArea className="flex-1">
+              <ul className="space-y-1 text-sm p-2">
+                {novel.toc.map((item, index) => (
+                  <li key={`toc-mob-${index}`}>
+                    <button
+                      type="button"
+                      onClick={() => handleClickTocItem(item.id)}
+                      className={cn(
+                        "w-full text-left rounded px-2 py-1 transition-colors",
+                        item.id === activeChapterId
+                          ? "bg-blue-500/20 text-blue-400 font-semibold"
+                          : "text-[#aaa] hover:text-[#ddd]",
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </ScrollArea>
+          </div>
+        </div>
+      )}
+
+      {/* Layout */}
+      <div className="w-full flex justify-center items-center">
+        {/* Sommaire desktop */}
+        <aside className="hidden md:flex w-64 flex-col text-[#ccc]">
+          <h2 className="font-semibold mb-2">Sommaire</h2>
+
+          <ScrollArea className="h-[80vh] pr-2 border border-[#444] rounded-md bg-[#252525]">
+            <ul className="space-y-1 text-sm p-2">
+              {novel.toc.map((item, index) => (
+                <li key={`toc-desk-${index}`}>
                   <button
                     type="button"
+                    onClick={() => handleClickTocItem(item.id)}
                     className={cn(
                       "w-full text-left rounded px-2 py-1 transition-colors",
-                      isActive
-                        ? "bg-primary/10 text-primary font-semibold"
-                        : "text-muted-foreground hover:text-foreground",
+                      item.id === activeChapterId
+                        ? "bg-blue-500/20 text-blue-400 font-semibold"
+                        : "text-[#aaa] hover:text-[#ddd]",
                     )}
-                    onClick={() => {
-                      const el = document.getElementById(item.id);
-                      el?.scrollIntoView({
-                        behavior: "smooth",
-                        block: "start",
-                      });
-                      setActiveChapterId(item.id);
-                    }}
                   >
                     {item.label}
                   </button>
                 </li>
-              );
-            })}
-          </ul>
-        </ScrollArea>
-      </aside>
+              ))}
+            </ul>
+          </ScrollArea>
+        </aside>
 
-      {/* Contenu */}
-      <main className="flex-1 flex flex-col min-h-0">
-        <header className="border-b px-4 py-2 flex items-center justify-between gap-2">
-          <h1 className="font-bold text-lg truncate">{novel.metadata.title}</h1>
-          <Button size="sm" variant="default" onClick={handleSaveBookmark}>
-            Bookmark
-          </Button>
-        </header>
+        {/* Reader zone */}
+        <main
+          className="flex-1 flex flex-col h-[calc(100vh-7rem)] md:h-[80vh] min-h-0 
+                         border border-[#444] rounded-md bg-[#252525] text-[#ccc] 
+                         mx-auto max-w-6xl shadow-sm"
+        >
+          <header className="border-b border-[#444] px-4 py-2 flex items-center justify-between">
+            <h1 className="text-2xl font-bold truncate">
+              {novel.metadata.title}
+            </h1>
+            <Button
+              className="bg-blue-600 text-white hover:bg-blue-500"
+              onClick={handleSaveBookmark}
+            >
+              Bookmark
+            </Button>
+          </header>
 
-        {/* Zone de lecture scrollable */}
-        <ScrollArea className="flex-1 h-[calc(80vh-3rem)]">
-          <div
-            ref={containerRef}
-            className="max-w-3xl mx-auto px-4 py-6 space-y-8"
-          >
-            {novel.chapters.map((chapter, chapterIndex) => {
-              const isActive = chapter.id === activeChapterId;
-              return (
+          <ScrollArea className="flex-1">
+            <div
+              ref={containerRef}
+              className="max-w-5xl mx-auto px-6 md:px-4 py-6 space-y-8"
+            >
+              {novel.chapters.map((chapter, i) => (
                 <section
-                  key={`${chapter.id}-${chapterIndex}`}
+                  key={i}
                   id={chapter.id}
                   data-chapter-id={chapter.id}
                   className="space-y-4"
                 >
                   <h2
                     className={cn(
-                      "text-xl font-semibold",
-                      isActive ? "text-primary" : "text-foreground",
+                      "text-2xl font-semibold",
+                      chapter.id === activeChapterId
+                        ? "text-blue-400"
+                        : "text-[#ccc]",
                     )}
                   >
                     {chapter.title}
                   </h2>
 
-                  {chapter.blocks.map((block) => {
-                    if (block.type === "image") {
-                      return (
-                        <picture
-                          key={block.id}
-                          data-block-id={block.id}
-                          data-chapter-id={chapter.id}
-                          className="flex justify-center my-4"
-                        >
-                          <img
-                            src={block.src}
-                            alt={block.alt ?? ""}
-                            className="max-h-[70vh] rounded"
-                          />
-                        </picture>
-                      );
-                    }
-
-                    return (
-                      <div
+                  {chapter.blocks.map((block) =>
+                    block.type === "image" ? (
+                      <picture
                         key={block.id}
+                        className="flex justify-center my-4"
                         data-block-id={block.id}
                         data-chapter-id={chapter.id}
-                        className="prose prose-invert max-w-none"
+                      >
+                        <img
+                          src={block.src}
+                          alt={block.alt ?? ""}
+                          className="w-[90%] h-auto max-h-[70vh] rounded object-contain"
+                        />
+                      </picture>
+                    ) : (
+                      <div
+                        key={block.id}
+                        style={{ fontSize: 20 }}
+                        className="prose prose-invert max-w-none text-[#ddd]"
                         // biome-ignore lint/security/noDangerouslySetInnerHtml: <temporary>
                         dangerouslySetInnerHTML={{ __html: block.html }}
                       />
-                    );
-                  })}
+                    ),
+                  )}
                 </section>
-              );
-            })}
-          </div>
-        </ScrollArea>
-      </main>
-    </div>
+              ))}
+            </div>
+          </ScrollArea>
+        </main>
+
+        <div className="hidden md:block w-64" />
+      </div>
+    </>
   );
 }
