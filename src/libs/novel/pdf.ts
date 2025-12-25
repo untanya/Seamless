@@ -1,7 +1,8 @@
 // src/libs/novel/pdf.ts
+/** biome-ignore-all lint/suspicious/noExplicitAny: <temporary> */
 import fs from "node:fs/promises";
 import zlib from "node:zlib";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { extractImages, extractText, getDocumentProxy } from "unpdf";
 import type { RawBlock } from "./types";
 
 // Limites pour éviter de faire exploser le temps de conversion
@@ -10,37 +11,37 @@ const MAX_IMAGES_PER_PAGE = 3; // max d'images par page
 const MIN_IMAGE_AREA = 200_000; // on ignore les images < 200k px (petites trames)
 
 export async function parsePdfToBlocks(pdfPath: string): Promise<RawBlock[]> {
-  const data = new Uint8Array(await fs.readFile(pdfPath));
+  // Lecture du fichier en Uint8Array (comme avant)
+  const fileBuffer = await fs.readFile(pdfPath);
+  const data = new Uint8Array(fileBuffer);
 
-  const loadingTask = (pdfjsLib as any).getDocument({
-    data,
-    useSystemFonts: false,
-  });
+  // Import dynamique d'unpdf pour éviter de toucher aux imports en haut du fichier
 
-  const pdf = await loadingTask.promise;
+  // Proxy PDF (build serverless de PDF.js gérée par unpdf)
+  const pdf = await getDocumentProxy(data);
+
+  // Texte page par page
+  const { totalPages, text } = await extractText(pdf, { mergePages: false });
+  const pagesText = Array.isArray(text) ? text : [text];
+
   const blocks: RawBlock[] = [];
   let totalImages = 0;
 
-  console.log(`[pdf] Start parse: ${pdfPath} (${pdf.numPages} pages)`);
+  console.log(`[pdf] Start parse (unpdf): ${pdfPath} (${totalPages} pages)`);
 
-  for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex++) {
-    const page = await pdf.getPage(pageIndex);
-    console.log(`[pdf] Page ${pageIndex}/${pdf.numPages}`);
+  for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+    const pageNumber = pageIndex + 1;
 
     // ------------------------------
     // 1) TEXTE DE LA PAGE
     // ------------------------------
-    const textContent = await page.getTextContent();
-    const text = textContent.items
-      // biome-ignore lint/suspicious/noExplicitAny: items non typés par pdf.js
-      .map((i: any) => ("str" in i ? i.str : ""))
-      .join("\n");
+    const pageText = pagesText[pageIndex] ?? "";
 
     blocks.push({
       kind: "text",
-      pageIndex: pageIndex - 1,
+      pageIndex, // 0-based
       order: 1,
-      text,
+      text: pageText,
     });
 
     // Si on a déjà atteint la limite globale d'images, on ne tente plus d'en extraire
@@ -49,51 +50,17 @@ export async function parsePdfToBlocks(pdfPath: string): Promise<RawBlock[]> {
     }
 
     // ------------------------------
-    // 2) IMAGES (best-effort, sans canvas)
+    // 2) IMAGES via unpdf.extractImages
     // ------------------------------
     let imagesOnPage = 0;
 
     try {
-      const opList = await page.getOperatorList();
-      const objs = (page as any).objs;
-      if (!objs) {
-        continue;
-      }
+      // unpdf: images d'une page précise (1-based)
+      const images = await extractImages(pdf, pageNumber);
 
-      for (let i = 0; i < opList.fnArray.length; i++) {
-        const fnId = opList.fnArray[i];
-
-        // 92 = paintImageXObject, 91 = paintInlineImageXObject
-        if (
-          fnId !== pdfjsLib.OPS.paintImageXObject &&
-          fnId !== pdfjsLib.OPS.paintInlineImageXObject
-        ) {
-          continue;
-        }
-
+      for (const img of images) {
         if (imagesOnPage >= MAX_IMAGES_PER_PAGE) break;
         if (totalImages >= MAX_IMAGES_TOTAL) break;
-
-        const args = opList.argsArray[i];
-        const objId = args && args[0];
-        if (!objId) continue;
-
-        // Ne pas demander un objet pas encore résolu
-        if (typeof objs.hasData === "function" && !objs.hasData(objId)) {
-          continue;
-        }
-
-        let img: any;
-        try {
-          img = objs.get(objId);
-        } catch {
-          // "Requesting object that isn't resolved yet" -> on ignore cette image
-          continue;
-        }
-
-        if (!img || !img.data || !img.width || !img.height) {
-          continue;
-        }
 
         const area = img.width * img.height;
         // On ignore les petites images (icônes, trames, etc.)
@@ -103,17 +70,23 @@ export async function parsePdfToBlocks(pdfPath: string): Promise<RawBlock[]> {
 
         let pngBase64: string;
         try {
-          pngBase64 = encodeRGBAtoPNG(img);
+          // on réutilise ton encodeur PNG, en lui passant
+          // les infos retournées par unpdf
+          pngBase64 = encodeRGBAtoPNG({
+            width: img.width,
+            height: img.height,
+            data: img.data,
+          });
         } catch {
           continue;
         }
 
         blocks.push({
           kind: "image",
-          pageIndex: pageIndex - 1,
+          pageIndex, // 0-based
           order: 0,
           dataUrl: `data:image/png;base64,${pngBase64}`,
-          alt: `Image p.${pageIndex}`,
+          alt: `Image p.${pageNumber}`,
         });
 
         imagesOnPage++;
@@ -122,12 +95,12 @@ export async function parsePdfToBlocks(pdfPath: string): Promise<RawBlock[]> {
 
       if (imagesOnPage > 0) {
         console.log(
-          `[pdf]   Images on page ${pageIndex}: ${imagesOnPage} (total: ${totalImages})`,
+          `[pdf]   Images on page ${pageNumber}: ${imagesOnPage} (total: ${totalImages})`,
         );
       }
     } catch (err) {
       console.log(
-        `[pdf]   Image extraction error on page ${pageIndex}:`,
+        `[pdf]   Image extraction error on page ${pageNumber}:`,
         (err as Error).message,
       );
       // On ignore l'erreur pour ne pas casser la conversion
@@ -140,7 +113,7 @@ export async function parsePdfToBlocks(pdfPath: string): Promise<RawBlock[]> {
   });
 
   console.log(
-    `[pdf] Done parse: ${pdfPath} (pages: ${pdf.numPages}, images: ${totalImages})`,
+    `[pdf] Done parse (unpdf): ${pdfPath} (pages: ${totalPages}, images: ${totalImages})`,
   );
 
   return blocks;

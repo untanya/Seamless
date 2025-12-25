@@ -33,7 +33,6 @@ export function convertBlocksToNovel(
   let currentNumber: number | undefined;
   let chapterCount = 0;
 
-  // Texte brut en attente (entre deux headers)
   let pendingText = "";
 
   const flushPendingText = () => {
@@ -53,22 +52,18 @@ export function convertBlocksToNovel(
   };
 
   const pushCurrentChapter = () => {
-    // On finalise d'abord le texte en attente
     flushPendingText();
-
     if (!currentBlocks.length) return;
 
-    // Compteur strictement croissant = ID unique
     chapterCount++;
 
-    // Numéro logique (issu du texte) ou fallback sur l'ordre
     const number = currentNumber ?? chapterCount;
     const id = `chapter-${chapterCount}`;
 
     chapters.push({
       id,
       number,
-      title: currentTitle || `Chapitre ${number}`,
+      title: currentTitle || `Chapter ${number}`,
       blocks: currentBlocks,
     });
 
@@ -77,80 +72,244 @@ export function convertBlocksToNovel(
     currentNumber = undefined;
   };
 
-  // Heuristique : une ligne qui ressemble à la suite d'un header
+  // --- structure helpers ---
+
+  const isPageLine = (line: string): boolean => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/^page\s*[\|:]\s*\d+\s*$/i.test(t)) return true;
+    if (/^page\s+\d+\s*$/i.test(t)) return true;
+    if (/^\d+\s*\|\s*[Pp]\s*a\s*g\s*e\b/.test(t)) return true;
+    return false;
+  };
+
+  const looksLikeOpeningContent = (line: string): boolean => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/^["“‘«「『]/.test(t)) return true;
+    if (t.endsWith(",")) return true;
+    return false;
+  };
+
   const isHeaderContinuation = (line: string): boolean => {
-    const trimmed = line.trim();
-    if (!trimmed) return false;
+    const t = line.trim();
+    if (!t) return false;
 
-    // On évite les phrases normales qui finissent par . ! ?
-    if (/[.!?]$/.test(trimmed)) return false;
+    if (/[.!?]$/.test(t)) return false;
+    if (looksLikeOpeningContent(t)) return false;
 
-    // Pas trop court, pas trop long
-    if (trimmed.length < 5 || trimmed.length > 140) return false;
+    if (t.length < 3 || t.length > 140) return false;
 
-    // Ratio de majuscules élevé
-    const letters = trimmed.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, "");
+    const letters = t.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, "");
     if (!letters) return false;
 
     const upper = letters.replace(/[^A-ZÀ-Ö]/g, "");
     const upperRatio = upper.length / letters.length;
 
-    // Si tout est en majuscules, ou quasi
     return upperRatio > 0.7;
   };
+
+  const endsLikeHeadingPrefix = (line: string): boolean => {
+    const t = line.trim();
+    return /[:\-–]\s*$/.test(t);
+  };
+
+  const isAllCapsWord = (w: string): boolean => {
+    const letters = w.replace(/[^A-Za-z]/g, "");
+    if (letters.length < 2) return false;
+    return (
+      letters === letters.toUpperCase() && letters !== letters.toLowerCase()
+    );
+  };
+
+  // Split mixed heading line:
+  // "The Diary (Part 1) IT WAS THE MORNING AFTER ..."
+  // -> title: "The Diary (Part 1)"
+  // -> remainder: "IT WAS THE MORNING AFTER ..."
+  const splitTitleFromMixedLine = (
+    line: string,
+  ): { title: string; remainder: string } => {
+    const t = line.trim();
+    if (!t) return { title: "", remainder: "" };
+
+    const tokens = t.split(/\s+/);
+    if (tokens.length < 6) return { title: t, remainder: "" };
+
+    let splitAt = -1;
+
+    for (let i = 0; i < tokens.length - 2; i++) {
+      if (!isAllCapsWord(tokens[i])) continue;
+      if (!isAllCapsWord(tokens[i + 1])) continue;
+      if (!isAllCapsWord(tokens[i + 2])) continue;
+
+      const after = tokens.slice(i).join(" ");
+      const hasLowerLater = /[a-z]/.test(after);
+      if (!hasLowerLater) continue;
+
+      const before = tokens.slice(0, i).join(" ").trim();
+      if (before.length < 6) continue;
+
+      const remainder = tokens.slice(i).join(" ").trim();
+      if (remainder.length < 20) continue;
+
+      splitAt = i;
+      break;
+    }
+
+    if (splitAt === -1) return { title: t, remainder: "" };
+
+    return {
+      title: tokens.slice(0, splitAt).join(" ").trim(),
+      remainder: tokens.slice(splitAt).join(" ").trim(),
+    };
+  };
+
+  // Returns:
+  // - finalTitle: what goes into chapter.title
+  // - consumed: how many lines to consume from input
+  // - remainderToText: if we split title/body, this goes back into pendingText
+  const consumeChapterHeading = (
+    lines: string[],
+    startIndex: number,
+    chapLine: string,
+  ): { finalTitle: string; consumed: number; remainderToText: string } => {
+    const det = matcher.detectChapter(chapLine);
+    if (!det) {
+      return { finalTitle: chapLine.trim(), consumed: 1, remainderToText: "" };
+    }
+
+    // Case A: same-line title exists ("Chapter 12: The Summons")
+    if (det.title?.trim()) {
+      // Keep "Chapter X:" prefix as part of the title? -> NO, we keep what parser already gives
+      // But you want it for prefix-only cases; for same-line cases, the input already has it.
+      return { finalTitle: chapLine.trim(), consumed: 1, remainderToText: "" };
+    }
+
+    // Case B: "Chapter X" (no ":" / "-" / "–") => keep as-is (avoid eating content)
+    if (!endsLikeHeadingPrefix(chapLine)) {
+      return { finalTitle: chapLine.trim(), consumed: 1, remainderToText: "" };
+    }
+
+    // Case C: "Chapter X:" prefix-only => merge next title-ish line
+    let j = startIndex + 1;
+    while (j < lines.length) {
+      const next = (lines[j] ?? "").trim();
+      if (!next) {
+        j++;
+        continue;
+      }
+      if (isPageLine(next)) {
+        j++;
+        continue;
+      }
+      if (looksLikeOpeningContent(next)) {
+        return {
+          finalTitle: chapLine.trim(),
+          consumed: 1,
+          remainderToText: "",
+        };
+      }
+
+      // We accept next line as title if it looks like a heading OR it looks like a normal title line.
+      // This keeps compatibility with novels that use Title Case (not all-caps).
+      if (
+        !matcher.isLikelyChapterTitleLine(next) &&
+        !isHeaderContinuation(next)
+      ) {
+        return {
+          finalTitle: chapLine.trim(),
+          consumed: 1,
+          remainderToText: "",
+        };
+      }
+
+      // Try merging optional 2nd continuation line (rare)
+      let full = next;
+      let consumed = j - startIndex + 1;
+
+      const next2 = (lines[j + 1] ?? "").trim();
+      if (next2 && !isPageLine(next2) && isHeaderContinuation(next2)) {
+        full = `${full} ${next2}`;
+        consumed += 1;
+      }
+
+      // Split "title + body" line
+      const { title, remainder } = splitTitleFromMixedLine(full);
+
+      // ✅ IMPORTANT: keep "Chapter X:" prefix in final title
+      // Example wanted: "Chapter 1: The Diary (Part 1)"
+      const prefix = chapLine.trim().replace(/\s*$/, "");
+      const final = title ? `${prefix} ${title}` : prefix;
+
+      return { finalTitle: final.trim(), consumed, remainderToText: remainder };
+    }
+
+    return { finalTitle: chapLine.trim(), consumed: 1, remainderToText: "" };
+  };
+
+  // --- main loop ---
 
   for (const raw of rawBlocks) {
     if (raw.kind === "text") {
       const lines = raw.text.split("\n").map((l) => l.trim());
 
-      // On a besoin d'un index pour regarder les lignes suivantes
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (!line) continue;
 
-        // 1) Header de chapitre classique ("Chapitre 1", "Part 2", "第3章", etc.)
+        if (isPageLine(line)) continue;
+
         const chap = matcher.detectChapter(line);
         if (chap) {
           pushCurrentChapter();
-          currentTitle = chap.title || line;
+
+          const { finalTitle, consumed, remainderToText } =
+            consumeChapterHeading(lines, i, line);
+
+          currentTitle = finalTitle || line;
           currentNumber = chap.number;
-          continue;
-        }
 
-        // 2) Header de section / scène (Prologue, Epilogue, headers journalistiques)
-        const section = matcher.detectSection(line);
-        if (section) {
-          // On essaie de récupérer les lignes suivantes qui complètent le header
-          let fullTitle = section.title;
-
-          let j = i + 1;
-          while (j < lines.length) {
-            const nextLine = lines[j];
-            if (!nextLine) {
-              j++;
-              continue;
-            }
-
-            if (!isHeaderContinuation(nextLine)) break;
-
-            // On ajoute la ligne suivante au titre
-            fullTitle += " " + nextLine.trim();
-            i = j; // on avance l'index principal pour "consommer" cette ligne
-            j++;
+          if (remainderToText) {
+            pendingText += (pendingText ? "\n" : "") + remainderToText;
           }
 
-          pushCurrentChapter();
-          currentTitle = fullTitle;
-          currentNumber = undefined; // numérotation continue auto
+          i += Math.max(0, consumed - 1);
           continue;
         }
 
-        // 3) Ligne "normale" => on la colle au texte en attente
-        // On garde les "\n" pour que TextProcessor voie les coupures
+        if (!looksLikeOpeningContent(line)) {
+          const section = matcher.detectSection(line);
+          if (section) {
+            let fullTitle = section.title;
+
+            let j = i + 1;
+            while (j < lines.length) {
+              const nextLine = (lines[j] ?? "").trim();
+              if (!nextLine) {
+                j++;
+                continue;
+              }
+              if (isPageLine(nextLine)) {
+                j++;
+                continue;
+              }
+              if (!isHeaderContinuation(nextLine)) break;
+
+              fullTitle += ` ${nextLine}`;
+              i = j;
+              j++;
+            }
+
+            pushCurrentChapter();
+            currentTitle = fullTitle.trim();
+            currentNumber = undefined;
+            continue;
+          }
+        }
+
         pendingText += (pendingText ? "\n" : "") + line;
       }
     } else if (raw.kind === "image") {
-      // On flush le texte avant d'insérer une image
       flushPendingText();
 
       currentBlocks.push({
@@ -162,7 +321,6 @@ export function convertBlocksToNovel(
     }
   }
 
-  // Dernier chapitre à la fin
   pushCurrentChapter();
 
   const toc: TocItem[] = chapters

@@ -13,22 +13,24 @@ interface ReaderProps {
   novelId: string;
 }
 
-export function Reader({ novel, novelId }: ReaderProps) {
+export function Reader({ novel }: ReaderProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const { bookmark, saveBookmark, setNovel } = useReaderStore();
+  const bookmark = useReaderStore((s) => s.getBookmarkForCurrent());
+  const saveBookmarkForCurrent = useReaderStore(
+    (s) => s.saveBookmarkForCurrent,
+  );
 
   const [activeChapterId, setActiveChapterId] = useState<string | null>(
     novel.chapters[0]?.id ?? null,
   );
   const [isTocOpen, setIsTocOpen] = useState(false);
 
-  // Init
+  // Init active chapter quand le novel change
   useEffect(() => {
-    setNovel(novel, novelId);
     setActiveChapterId(novel.chapters[0]?.id ?? null);
-  }, [novel, novelId, setNovel]);
+  }, [novel]);
 
-  // Scroll to bookmark
+  // Scroll to bookmark du novel courant
   useEffect(() => {
     if (!bookmark || !containerRef.current) return;
 
@@ -41,7 +43,7 @@ export function Reader({ novel, novelId }: ReaderProps) {
     }
   }, [bookmark]);
 
-  // Update active chapter during scroll
+  // Update active chapter pendant le scroll
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -103,7 +105,7 @@ export function Reader({ novel, novelId }: ReaderProps) {
     )
       return;
 
-    saveBookmark({
+    saveBookmarkForCurrent({
       chapterId: firstVisible.dataset.chapterId,
       blockId: firstVisible.dataset.blockId,
     });
@@ -255,6 +257,8 @@ export function Reader({ novel, novelId }: ReaderProps) {
                     ) : (
                       <div
                         key={block.id}
+                        data-block-id={block.id}
+                        data-chapter-id={chapter.id}
                         style={{ fontSize: 20 }}
                         className="prose prose-invert max-w-none text-[#ddd]"
                         // biome-ignore lint/security/noDangerouslySetInnerHtml: <temporary>

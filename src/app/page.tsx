@@ -1,30 +1,85 @@
 // app/page.tsx
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Reader } from "@/app/api/components/Reader";
-import type { Novel } from "@/libs/novel/types";
 import { ProgressBar } from "@/components/ui/progress-bar";
+import { loadNovelFromDb, saveNovelToDb } from "@/libs/novel/storage";
+import type { Novel } from "@/libs/novel/types";
+import { type NovelMeta, useReaderStore } from "@/store/useReaderStore";
 
 export default function HomePage() {
-  const [novel, setNovel] = useState<Novel | null>(null);
-  const [novelId, setNovelId] = useState<string | null>(null);
+  const {
+    currentNovel,
+    currentNovelId,
+    setCurrentNovel,
+    clearCurrent,
+    recents,
+  } = useReaderStore();
+
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   // timer pour la progression "continue"
   const progressTimerRef = useRef<number | null>(null);
 
-  const showReader = !!(novel && novelId);
+  const showReader = !!(currentNovel && currentNovelId);
+
+  // Rehydratation depuis IndexedDB si on a un currentNovelId mais pas encore de currentNovel
+  useEffect(() => {
+    if (!currentNovel && currentNovelId) {
+      let cancelled = false;
+
+      (async () => {
+        try {
+          const cached = await loadNovelFromDb(currentNovelId);
+          if (!cancelled && cached) {
+            const metaFromRecents = recents.find(
+              (r) => r.id === currentNovelId,
+            );
+            const meta: NovelMeta = metaFromRecents ?? {
+              id: currentNovelId,
+              title: cached.metadata.title,
+              fileName: cached.metadata.title,
+              createdAt: new Date().toISOString(),
+            };
+            setCurrentNovel(cached, meta);
+          }
+        } catch (e) {
+          console.warn(
+            "LNReader: impossible de recharger le novel depuis IndexedDB",
+            e,
+          );
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [currentNovel, currentNovelId, recents, setCurrentNovel]);
+
+  const filteredRecents = useMemo(
+    () =>
+      recents.filter((meta) => {
+        if (!search.trim()) return true;
+        const needle = search.toLowerCase();
+        return (
+          meta.title.toLowerCase().includes(needle) ||
+          meta.fileName.toLowerCase().includes(needle)
+        );
+      }),
+    [recents, search],
+  );
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // reset état
-    setNovel(null);
-    setNovelId(null);
+    // reset état (UI + novel courant, mais on garde recents + bookmarks)
+    clearCurrent();
     setError(null);
     setProgress(0);
     setLoading(true);
@@ -38,11 +93,9 @@ export default function HomePage() {
     // barre de progression "estimée" sur toute la durée du fetch + parsing
     progressTimerRef.current = window.setInterval(() => {
       setProgress((prev) => {
-        // on approche asymptotiquement 99%, sans jamais s'y bloquer
         if (prev >= 99) return 99;
-
         const remaining = 99 - prev;
-        const step = Math.max(remaining * 0.05, 0.3); // baisse progressivement
+        const step = Math.max(remaining * 0.05, 0.3);
         return Math.min(prev + step, 99);
       });
     }, 300);
@@ -70,8 +123,22 @@ export default function HomePage() {
       }
 
       const data = (await res.json()) as Novel;
-      setNovel(data);
-      setNovelId(`${file.name}-${file.size}-${file.lastModified}`);
+
+      const generatedNovelId = `${file.name}-${file.size}-${file.lastModified}`;
+
+      const meta: NovelMeta = {
+        id: generatedNovelId,
+        title: data.metadata.title,
+        fileName: file.name,
+        createdAt: new Date().toISOString(),
+      };
+
+      // 1) mettre en mémoire + enregistrer meta dans recents
+      setCurrentNovel(data, meta);
+
+      // 2) persister localement dans IndexedDB
+      void saveNovelToDb(generatedNovelId, data);
+
       setProgress(100);
     } catch (err) {
       console.error(err);
@@ -85,10 +152,41 @@ export default function HomePage() {
         progressTimerRef.current = null;
       }
 
-      // reset visuel doux après la fin (sauf si 0)
       if (progress > 0) {
         setTimeout(() => setProgress(0), 700);
       }
+    }
+  }
+
+  async function handleSelectExisting(novelId: string) {
+    if (!novelId || novelId === currentNovelId) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const cached = await loadNovelFromDb(novelId);
+      if (!cached) {
+        setError(
+          "Impossible de retrouver ce novel localement. Il a peut-être été nettoyé par le navigateur.",
+        );
+        return;
+      }
+
+      const metaFromRecents = recents.find((r) => r.id === novelId);
+      const meta: NovelMeta = metaFromRecents ?? {
+        id: novelId,
+        title: cached.metadata.title,
+        fileName: cached.metadata.title,
+        createdAt: new Date().toISOString(),
+      };
+
+      setCurrentNovel(cached, meta);
+    } catch (err) {
+      console.error(err);
+      setError("Erreur lors du chargement du novel local.");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -96,48 +194,73 @@ export default function HomePage() {
     <main
       className={
         showReader
-          ? // Quand le reader est affiché : pas d’overflow global, tout est calé dans l’écran
-            "min-h-screen max-h-screen overflow-hidden bg-[#1e1e1e] text-[#cccccc] p-4 flex flex-col"
-          : // Écran d’accueil normal
-            "min-h-screen bg-[#1e1e1e] text-[#cccccc] p-4 space-y-6"
+          ? "min-h-screen max-h-screen overflow-hidden bg-[#1e1e1e] text-[#cccccc] p-4 flex flex-col"
+          : "min-h-screen bg-[#1e1e1e] text-[#cccccc] p-4 space-y-6"
       }
     >
       {/* Header / Upload card */}
       <header className="max-w-5xl w-full mx-auto rounded-xl border border-[#444444] bg-[#252525] p-4 shadow-sm flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="space-y-1">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1 min-w-[220px]">
             <h1 className="text-2xl font-bold">LNReader</h1>
             <p className="text-sm text-[#aaaaaa]">
               Choisis un PDF de Light Novel pour le lire dans l’interface.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <input
-              type="file"
-              accept="application/pdf"
-              onChange={handleFileChange}
-              className="text-sm text-[#cccccc]
-                         file:mr-3 file:rounded-md file:border-0
-                         file:bg-blue-600 file:px-3 file:py-1.5
-                         file:text-xs file:font-medium file:text-white
-                         hover:file:bg-blue-500"
-            />
+          <div className="flex flex-col gap-2 items-end flex-1 min-w-[260px]">
+            {/* Upload PDF */}
+            <div className="flex flex-wrap items-center gap-3 justify-end">
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={handleFileChange}
+                className="text-sm text-[#cccccc]
+                           file:mr-3 file:rounded-md file:border-0
+                           file:bg-blue-600 file:px-3 file:py-1.5
+                           file:text-xs file:font-medium file:text-white
+                           hover:file:bg-blue-500"
+              />
+            </div>
+
+            {/* Dropdown de novels déjà convertis */}
+            {recents.length > 0 && (
+              <div className="flex flex-col gap-1 w-full max-w-md">
+                <span className="text-[11px] uppercase tracking-wide text-[#888]">
+                  Novels convertis
+                </span>
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="Rechercher..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="flex-1 rounded-md border border-[#555] bg-[#1f1f1f] px-2 py-1 text-xs text-[#ddd] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <select
+                    className="min-w-[180px] rounded-md border border-[#555] bg-[#1f1f1f] px-2 py-1 text-xs text-[#ddd] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    value={currentNovelId ?? ""}
+                    onChange={(e) => handleSelectExisting(e.target.value)}
+                  >
+                    <option value="">Sélectionner un novel…</option>
+                    {filteredRecents.map((meta) => (
+                      <option key={meta.id} value={meta.id}>
+                        {meta.title || meta.fileName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         {loading && (
           <div className="space-y-1 pt-1">
             <span className="text-xs text-[#aaaaaa]">
-              Conversion en cours...
+              Traitement en cours...
             </span>
-            <ProgressBar
-              value={progress}
-              showLabel
-              className="mt-1"
-              // pour changer facilement la couleur de la barre :
-              // barClassName="bg-emerald-500"
-            />
+            <ProgressBar value={progress} showLabel className="mt-1" />
           </div>
         )}
 
@@ -148,14 +271,16 @@ export default function HomePage() {
         )}
       </header>
 
-      {/* Zone de lecture (prend tout le reste de la hauteur, sans overflow global) */}
+      {/* Zone de lecture */}
       {showReader && (
         <section className="w-full flex-1 overflow-hidden mt-4">
-          <Reader novel={novel} novelId={novelId} />
+          <Reader
+            novel={currentNovel as Novel}
+            novelId={currentNovelId as string}
+          />
         </section>
       )}
 
-      {/* Explication quand rien n'est encore chargé */}
       {!showReader && !loading && (
         <section className="max-w-3xl mx-auto text-sm text-[#aaaaaa]">
           <p className="mb-2">Une fois le PDF envoyé, le serveur&nbsp;:</p>
