@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "lnreader",
+      "name": "seamless",
       "dependencies": {
         "@napi-rs/canvas": "^0.1.84",
         "@radix-ui/react-scroll-area": "^1.2.10",

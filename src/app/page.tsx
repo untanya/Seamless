@@ -49,7 +49,7 @@ export default function HomePage() {
           }
         } catch (e) {
           console.warn(
-            "LNReader: impossible de recharger le novel depuis IndexedDB",
+            "Seamless: impossible de recharger le novel depuis IndexedDB",
             e,
           );
         }
@@ -202,7 +202,7 @@ export default function HomePage() {
       <header className="max-w-5xl w-full mx-auto rounded-xl border border-[#444444] bg-[#252525] p-4 shadow-sm flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="space-y-1 min-w-[220px]">
-            <h1 className="text-2xl font-bold">LNReader</h1>
+            <h1 className="text-2xl font-bold">Seamless</h1>
             <p className="text-sm text-[#aaaaaa]">
               Choisis un PDF de Light Novel pour le lire dans l’interface.
             </p>

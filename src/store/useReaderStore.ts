@@ -68,7 +68,7 @@ export const useReaderStore = create<ReaderState>()(
       clearCurrent: () => set({ currentNovel: null, currentNovelId: null }),
     }),
     {
-      name: "lnreader-reader",
+      name: "seamless-reader",
       storage: createJSONStorage(() => {
         if (typeof window === "undefined") {
           return {
@@ -86,7 +86,7 @@ export const useReaderStore = create<ReaderState>()(
             try {
               ls.setItem(name, value);
             } catch (err) {
-              console.warn("LNReader: impossible de persister l'état", err);
+              console.warn("Seamless: impossible de persister l'état", err);
             }
           },
           removeItem: ls.removeItem.bind(ls),

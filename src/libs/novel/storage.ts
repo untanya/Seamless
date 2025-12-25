@@ -2,7 +2,7 @@
 import { createStore, del, get, keys, set } from "idb-keyval";
 import type { Novel } from "@/libs/novel/types";
 
-const novelStore = createStore("lnreader-db", "novels");
+const novelStore = createStore("seamless-db", "novels");
 
 export async function saveNovelToDb(novelId: string, novel: Novel) {
   await set(novelId, novel, novelStore);
