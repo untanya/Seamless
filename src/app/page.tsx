@@ -21,17 +21,17 @@ export default function HomePage() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [logs, setLogs] = useState<string[]>([]);
 
-  // timer pour la progression "continue"
+  // Timer for estimated progress (0–99 %)
   const progressTimerRef = useRef<number | null>(null);
 
   const showReader = !!(currentNovel && currentNovelId);
 
-  // Rehydratation depuis IndexedDB si on a un currentNovelId mais pas encore de currentNovel
+  // Rehydrate from IndexedDB if needed
   useEffect(() => {
     if (!currentNovel && currentNovelId) {
       let cancelled = false;
-
       (async () => {
         try {
           const cached = await loadNovelFromDb(currentNovelId);
@@ -54,7 +54,6 @@ export default function HomePage() {
           );
         }
       })();
-
       return () => {
         cancelled = true;
       };
@@ -78,19 +77,20 @@ export default function HomePage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // reset état (UI + novel courant, mais on garde recents + bookmarks)
+    // Reset state and start loading
     clearCurrent();
     setError(null);
+    setLogs([]);
     setProgress(0);
     setLoading(true);
 
-    // clear éventuel timer précédent
+    // Clear any previous estimated-progress timer
     if (progressTimerRef.current !== null) {
       window.clearInterval(progressTimerRef.current);
       progressTimerRef.current = null;
     }
 
-    // barre de progression "estimée" sur toute la durée du fetch + parsing
+    // Start the estimated-progress timer (0–99 % over time)
     progressTimerRef.current = window.setInterval(() => {
       setProgress((prev) => {
         if (prev >= 99) return 99;
@@ -117,44 +117,74 @@ export default function HomePage() {
             msg += ` – ${errBody.error ?? ""} ${errBody.details ?? ""}`;
           }
         } catch {
-          // ignore
+          /* ignore */
         }
         throw new Error(msg);
       }
 
-      const data = (await res.json()) as Novel;
+      const json = await res.json();
 
-      const generatedNovelId = `${file.name}-${file.size}-${file.lastModified}`;
+      // Determine whether the response contains { novel, logs } or just the novel
+      let novelData: Novel;
+      let logsArray: string[] = [];
+      if (json.novel) {
+        novelData = json.novel as Novel;
+        logsArray = Array.isArray(json.logs) ? json.logs : [];
+      } else {
+        novelData = json as Novel;
+      }
 
-      const meta: NovelMeta = {
-        id: generatedNovelId,
-        title: data.metadata.title,
-        fileName: file.name,
-        createdAt: new Date().toISOString(),
-      };
-
-      // 1) mettre en mémoire + enregistrer meta dans recents
-      setCurrentNovel(data, meta);
-
-      // 2) persister localement dans IndexedDB
-      void saveNovelToDb(generatedNovelId, data);
-
-      setProgress(100);
-    } catch (err) {
-      console.error(err);
-      setError("Erreur pendant la conversion.");
-      setProgress(0);
-    } finally {
-      setLoading(false);
-
+      // Stop the estimated-progress timer
       if (progressTimerRef.current !== null) {
         window.clearInterval(progressTimerRef.current);
         progressTimerRef.current = null;
       }
 
-      if (progress > 0) {
-        setTimeout(() => setProgress(0), 700);
+      // Prepare novel ID and metadata for later saving
+      const generatedNovelId = `${file.name}-${file.size}-${file.lastModified}`;
+      const meta: NovelMeta = {
+        id: generatedNovelId,
+        title: novelData.metadata.title,
+        fileName: file.name,
+        createdAt: new Date().toISOString(),
+      };
+
+      // If logs are present, display them with actual progression, then save the novel
+      if (logsArray.length > 0) {
+        logsArray.forEach((line, index) => {
+          setTimeout(() => {
+            setLogs((prev) => [...prev, line]);
+            setProgress(Math.round(((index + 1) / logsArray.length) * 100));
+            if (index === logsArray.length - 1) {
+              setCurrentNovel(novelData, meta);
+              void saveNovelToDb(generatedNovelId, novelData);
+              setTimeout(() => {
+                setProgress(0);
+                setLoading(false);
+              }, 700);
+            }
+          }, index * 150);
+        });
+      } else {
+        // No logs: save novel immediately and fill the progress bar briefly
+        setProgress(100);
+        setCurrentNovel(novelData, meta);
+        void saveNovelToDb(generatedNovelId, novelData);
+        setTimeout(() => {
+          setProgress(0);
+          setLoading(false);
+        }, 1000);
       }
+    } catch (err) {
+      console.error(err);
+      setError("Erreur pendant la conversion.");
+      setProgress(0);
+      // Stop any running timer
+      if (progressTimerRef.current !== null) {
+        window.clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+      setLoading(false);
     }
   }
 
@@ -257,9 +287,19 @@ export default function HomePage() {
 
         {loading && (
           <div className="space-y-1 pt-1">
-            <span className="text-xs text-[#aaaaaa]">
-              Traitement en cours...
-            </span>
+            {/* Show logs if available, otherwise a generic message */}
+            {logs.length > 0 ? (
+              <div className="bg-[#2a2a2a] p-2 rounded text-xs text-[#aaaaaa] max-h-36 overflow-y-auto">
+                {logs.map((line, idx) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: <expected>
+                  <div key={idx}>{line}</div>
+                ))}
+              </div>
+            ) : (
+              <span className="text-xs text-[#aaaaaa]">
+                Traitement en cours...
+              </span>
+            )}
             <ProgressBar value={progress} showLabel className="mt-1" />
           </div>
         )}
@@ -283,11 +323,11 @@ export default function HomePage() {
 
       {!showReader && !loading && (
         <section className="max-w-3xl mx-auto text-sm text-[#aaaaaa]">
-          <p className="mb-2">Une fois le PDF envoyé, le serveur&nbsp;:</p>
+          <p className="mb-2">Une fois le PDF envoyé, le serveur :</p>
           <ul className="list-disc list-inside space-y-1">
-            <li>extrait le texte et les illustrations dans l&apos;ordre,</li>
+            <li>extrait le texte et les illustrations dans l’ordre,</li>
             <li>détecte la langue et les chapitres (et transitions),</li>
-            <li>renvoie un JSON que le lecteur affiche dans l&apos;UI.</li>
+            <li>renvoie un JSON que le lecteur affiche dans l’UI.</li>
           </ul>
         </section>
       )}

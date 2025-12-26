@@ -7,6 +7,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { detect as detectLanguage } from "tinyld";
 import { convertBlocksToNovel } from "@/libs/novel/converter";
 import { parsePdfToBlocks } from "@/libs/novel/pdf";
+import type { RawBlock } from "@/libs/novel/types";
 import type { LanguageCode } from "@/libs/novel/types";
 
 export const runtime = "nodejs";
@@ -28,8 +29,19 @@ export async function POST(req: NextRequest) {
     tempPath = join(tmpdir(), `${Date.now()}-${file.name}`);
     await writeFile(tempPath, buffer);
 
-    const rawBlocks = await parsePdfToBlocks(tempPath);
+    // parsePdfToBlocks peut renvoyer un tableau ou un objet { blocks, logs }
+    const parseResult = await parsePdfToBlocks(tempPath);
+    let rawBlocks: RawBlock[];
+    let logs: string[] | undefined;
 
+    if (Array.isArray(parseResult)) {
+      rawBlocks = parseResult;
+    } else {
+      rawBlocks = parseResult.blocks;
+      logs = parseResult.logs;
+    }
+
+    // On extrait quelques lignes de texte pour détecter la langue
     const sampleText = rawBlocks
       .filter((b) => b.kind === "text")
       .slice(0, 3)
@@ -48,7 +60,8 @@ export async function POST(req: NextRequest) {
       language,
     });
 
-    return NextResponse.json(novel);
+    // Si des logs existent, on les renvoie avec le roman ; sinon, on renvoie le roman seul
+    return NextResponse.json(logs ? { novel, logs } : novel);
   } catch (e) {
     const err = e as Error;
     console.error("Erreur /api/convert:", err?.message, err?.stack);
