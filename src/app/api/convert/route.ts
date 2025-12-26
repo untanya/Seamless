@@ -7,8 +7,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { detect as detectLanguage } from "tinyld";
 import { convertBlocksToNovel } from "@/libs/novel/converter";
 import { parsePdfToBlocks } from "@/libs/novel/pdf";
-import type { RawBlock } from "@/libs/novel/types";
-import type { LanguageCode } from "@/libs/novel/types";
+import type { LanguageCode, RawBlock } from "@/libs/novel/types";
 
 export const runtime = "nodejs";
 

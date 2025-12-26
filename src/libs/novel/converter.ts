@@ -77,7 +77,7 @@ export function convertBlocksToNovel(
   const isPageLine = (line: string): boolean => {
     const t = line.trim();
     if (!t) return false;
-    if (/^page\s*[\|:]\s*\d+\s*$/i.test(t)) return true;
+    if (/^page\s*[|:]\s*\d+\s*$/i.test(t)) return true;
     if (/^page\s+\d+\s*$/i.test(t)) return true;
     if (/^\d+\s*\|\s*[Pp]\s*a\s*g\s*e\b/.test(t)) return true;
     return false;
